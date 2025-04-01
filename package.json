@@ -15,7 +15,7 @@
     "prepare": "npm run build",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
-    "deploy": "npm run build && npm publish"
+    "deploy": "npm run build && npm publish --access public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "0.6.0",
