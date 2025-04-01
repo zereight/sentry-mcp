@@ -10,50 +10,64 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosInstance } from 'axios';
 
-// Sentry API 토큰 환경 변수 확인
+// Check for Sentry API token environment variable
 const SENTRY_AUTH_TOKEN = process.env.SENTRY_AUTH_TOKEN;
 if (!SENTRY_AUTH_TOKEN) {
-  throw new Error('SENTRY_AUTH_TOKEN environment variable is required');
+  console.error('Error: SENTRY_AUTH_TOKEN environment variable is required.');
+  process.exit(1);
 }
 
-// Sentry API 기본 URL (필요시 환경 변수 등으로 설정 가능)
+// Check for Sentry organization slug and project names environment variables
+const SENTRY_ORG_SLUG = process.env.SENTRY_ORG_SLUG;
+const SENTRY_PROJECT_NAMES = process.env.SENTRY_PROJECT_NAMES; // Changed to accept multiple project names
+
+if (!SENTRY_ORG_SLUG || !SENTRY_PROJECT_NAMES) { // Name changed and check condition modified
+  console.error('Error: SENTRY_ORG_SLUG and SENTRY_PROJECT_NAMES environment variables must be set.'); // Name changed
+  process.exit(1); // Exit on error
+}
+
+
+// Sentry API base URL (can be set via environment variable if needed)
 const SENTRY_BASE_URL = process.env.SENTRY_BASE_URL || 'https://sentry.io';
 
 /**
- * Sentry 이슈 URL 또는 ID 유효성 검사 및 파싱
- * @param input - Sentry 이슈 URL 또는 ID 문자열
- * @returns 파싱된 이슈 정보 또는 null (유효하지 않은 경우)
+ * Validate and parse Sentry issue URL or ID
+ * @param input - Sentry issue URL or ID string
+ * @returns Parsed issue info or null (if invalid)
  */
 function parseSentryIssueInput(input: string): { issueId: string } | null {
   try {
-    // URL 형태인지 확인
+    // Check if it's a URL format
     if (input.startsWith('http://') || input.startsWith('https://')) {
       const url = new URL(input);
       const pathParts = url.pathname.split('/');
-      // 예: /issues/6380454530/
+      // e.g., /issues/6380454530/
       const issuesIndex = pathParts.indexOf('issues');
       if (issuesIndex !== -1 && pathParts.length > issuesIndex + 1) {
         const issueId = pathParts[issuesIndex + 1];
-        if (/^\d+$/.test(issueId)) { // 숫자로만 구성되었는지 확인
+        if (/^\d+$/.test(issueId)) { // Check if it consists only of digits
           return { issueId };
         }
       }
-    } else if (/^\d+$/.test(input)) { // 단순 ID 형태인지 확인
+    } else if (/^\d+$/.test(input)) { // Check if it's a simple ID format
       return { issueId: input };
     }
   } catch (e) {
-    // URL 파싱 오류 등은 무시
+    // Ignore URL parsing errors, etc.
     console.error("Error parsing Sentry input:", e);
   }
   return null;
 }
 
 /**
- * Sentry MCP 서버 클래스
+ * Sentry MCP Server class
  */
 class SentryServer {
   private server: Server;
   private axiosInstance: AxiosInstance;
+  private defaultOrgSlug: string;
+  private projectSlugs: string[]; // Store list of project slugs
+  private availableProjects: string[] = []; // List of available projects (initialized as an empty array)
 
   constructor() {
     this.server = new Server(
@@ -63,23 +77,28 @@ class SentryServer {
       },
       {
         capabilities: {
-          tools: {}, // 리소스나 프롬프트는 사용하지 않음
+          tools: {}, // Resources or prompts are not used
         },
       }
     );
 
-    // Sentry API 통신을 위한 axios 인스턴스 생성
+    // Create axios instance for Sentry API communication
     this.axiosInstance = axios.create({
-      baseURL: `${SENTRY_BASE_URL}/api/0/`, // Sentry API v0 사용
+      baseURL: `${SENTRY_BASE_URL}/api/0/`, // Use Sentry API v0
       headers: {
         Authorization: `Bearer ${SENTRY_AUTH_TOKEN}`,
         'Content-Type': 'application/json',
       },
     });
 
+    // Store value read from environment variable (use ! as existence is guaranteed)
+    this.defaultOrgSlug = SENTRY_ORG_SLUG!;
+    // Convert comma-separated project names into an array
+    this.projectSlugs = SENTRY_PROJECT_NAMES!.split(',').map(s => s.trim()).filter(s => s.length > 0);
+
     this.setupToolHandlers();
 
-    // 오류 처리 및 종료 핸들러
+    // Error handling and termination handler
     this.server.onerror = (error) => console.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
       await this.server.close();
@@ -88,10 +107,10 @@ class SentryServer {
   }
 
   /**
-   * MCP 도구 핸들러 설정
+   * Setup MCP tool handlers
    */
   private setupToolHandlers() {
-    // 사용 가능한 도구 목록 반환
+    // Return list of available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
@@ -111,7 +130,7 @@ class SentryServer {
         {
           name: 'list_organization_projects',
           description: 'List all projects for the configured Sentry organization',
-          inputSchema: { // 입력 파라미터 없음
+          inputSchema: { // No input parameters
             type: 'object',
             properties: {},
             required: [],
@@ -144,7 +163,7 @@ class SentryServer {
                  description: 'Pagination cursor for fetching next/previous page. Optional.',
               }
             },
-            required: ['organization_slug', 'project_slug'],
+            required: ['project_slug'], // Changed project_slug to required
           },
         },
         {
@@ -166,25 +185,25 @@ class SentryServer {
                 description: 'The ID of the event to retrieve.',
               },
             },
-            required: ['organization_slug', 'project_slug', 'event_id'],
+            required: ['event_id', 'project_slug'], // Changed project_slug to required
           },
         },
       ],
     }));
 
-    // 도구 호출 처리
+    // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      // 도구 이름에 따라 분기
+      // Branch based on tool name
       switch (request.params.name) {
         case 'get_sentry_issue': {
-          // 기존 get_sentry_issue 로직 ... (아래에서 계속)
-          break; // case 종료
+          // Existing get_sentry_issue logic ... (continued below)
+          break; // End case
         }
         case 'list_organization_projects': {
           try {
-            // Sentry API 호출하여 프로젝트 목록 가져오기
+            // Call Sentry API to get project list
             const response = await this.axiosInstance.get('projects/');
-            // 성공 시 프로젝트 목록 데이터를 JSON 문자열로 반환
+            // On success, return project list data as JSON string
             return {
               content: [
                 {
@@ -202,22 +221,27 @@ class SentryServer {
                  errorMessage = error.message;
              }
              console.error("Error listing Sentry projects:", error);
-            // 실패 시 오류 메시지 반환
+            // On failure, return error message
             return {
               content: [ { type: 'text', text: errorMessage } ],
               isError: true,
             };
           }
-          break; // case 종료
+          break; // End case
         }
         case 'list_project_issues': {
-          const { organization_slug, project_slug, query, statsPeriod, cursor } = request.params.arguments ?? {};
+          let { organization_slug, project_slug, query, statsPeriod, cursor } = request.params.arguments ?? {};
 
-          if (typeof organization_slug !== 'string' || typeof project_slug !== 'string') {
-            throw new McpError(ErrorCode.InvalidParams, 'Missing required arguments: organization_slug and project_slug must be strings.');
+          // If user doesn't provide slug, use default value read from environment variable
+          organization_slug = typeof organization_slug === 'string' ? organization_slug : this.defaultOrgSlug;
+          // Removed project_slug default assignment
+
+          // project_slug required check
+          if (typeof project_slug !== 'string' || project_slug.length === 0) {
+            throw new McpError(ErrorCode.InvalidParams, 'Missing or invalid argument: project_slug must be a non-empty string.');
           }
 
-          // API 요청을 위한 파라미터 구성
+          // Configure parameters for API request
           const apiParams: Record<string, string> = {};
           if (typeof query === 'string' && query.length > 0) apiParams.query = query;
           if (typeof statsPeriod === 'string' && statsPeriod.length > 0) apiParams.statsPeriod = statsPeriod;
@@ -229,9 +253,9 @@ class SentryServer {
               { params: apiParams }
             );
 
-            // 페이지네이션 정보를 포함하여 결과 반환 (Link 헤더 파싱 필요)
-            const linkHeader = response.headers['link']; // Axios는 소문자로 헤더 키를 반환할 수 있음
-            const paginationInfo = parseLinkHeader(linkHeader); // Link 헤더 파싱 함수 필요
+            // Return result including pagination info (Link header parsing needed)
+            const linkHeader = response.headers['link']; // Axios might return header keys in lowercase
+            const paginationInfo = parseLinkHeader(linkHeader); // Link header parsing function needed
 
             return {
               content: [
@@ -239,7 +263,7 @@ class SentryServer {
                   type: 'text',
                   text: JSON.stringify({
                     issues: response.data,
-                    pagination: paginationInfo, // 파싱된 페이지네이션 정보 추가
+                    pagination: paginationInfo, // Add parsed pagination info
                   }, null, 2),
                 },
               ],
@@ -258,13 +282,27 @@ class SentryServer {
               isError: true,
             };
           }
-          break; // case 종료
+          break; // End case
         }
         case 'get_event_details': {
-          const { organization_slug, project_slug, event_id } = request.params.arguments ?? {};
+          let { organization_slug, project_slug, event_id } = request.params.arguments ?? {};
 
-          if (typeof organization_slug !== 'string' || typeof project_slug !== 'string' || typeof event_id !== 'string') {
-            throw new McpError(ErrorCode.InvalidParams, 'Missing required arguments: organization_slug, project_slug, and event_id must be strings.');
+           // If user doesn't provide slug, use default value read from environment variable
+           organization_slug = typeof organization_slug === 'string' ? organization_slug : this.defaultOrgSlug;
+           // Removed project_slug default assignment
+
+          // Added project_slug required check
+          if (typeof project_slug !== 'string' || project_slug.length === 0) {
+             throw new McpError(ErrorCode.InvalidParams, 'Missing or invalid argument: project_slug must be a non-empty string.');
+          }
+          // event_id required and format check
+          if (typeof event_id !== 'string') { // First check if it's string type
+            throw new McpError(ErrorCode.InvalidParams, 'Missing or invalid argument: event_id must be a string.');
+          }
+          // Event ID validation (32-char hex) - event_id is now guaranteed to be string type
+          const eventIdRegex = /^[a-f0-9]{32}$/i;
+          if (!eventIdRegex.test(event_id)) {
+            throw new McpError(ErrorCode.InvalidParams, `Invalid event_id format: '${event_id}'. Please provide a valid 32-character hexadecimal Sentry Event ID. You can get this by clicking 'Copy Event ID' in Sentry.`);
           }
 
           try {
@@ -293,18 +331,18 @@ class SentryServer {
               isError: true,
             };
           }
-          break; // case 종료
+          break; // End case
         }
         default: {
-          // 알 수 없는 도구 오류 처리
+          // Handle unknown tool error
           throw new McpError(
             ErrorCode.MethodNotFound,
             `Unknown tool: ${request.params.name}`
           );
         }
-      } // switch 종료
+      } // End switch
 
-      // --- get_sentry_issue 로직 시작 ---
+      // --- Start of get_sentry_issue logic ---
 
       const issueInput = request.params.arguments?.issue_id_or_url;
 
@@ -327,15 +365,15 @@ class SentryServer {
       const { issueId } = parsedInput;
 
       try {
-        // Sentry API 호출하여 이슈 정보 가져오기
+        // Call Sentry API to get issue info
         const response = await this.axiosInstance.get(`issues/${issueId}/`);
 
-        // 성공 시 이슈 데이터를 JSON 문자열로 반환
+        // On success, return issue data as JSON string
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(response.data, null, 2), // 보기 좋게 포맷팅
+              text: JSON.stringify(response.data, null, 2), // Pretty-print
             },
           ],
         };
@@ -348,7 +386,7 @@ class SentryServer {
             errorMessage = error.message;
         }
          console.error("Error fetching Sentry issue:", error);
-        // 실패 시 오류 메시지 반환
+        // On failure, return error message
         return {
           content: [
             {
@@ -359,7 +397,7 @@ class SentryServer {
           isError: true,
         };
       }
-    }); // CallToolRequestSchema 핸들러 종료
+    }); // End CallToolRequestSchema handler
 
     // --- Helper function to parse Link header ---
     function parseLinkHeader(header: string | undefined): Record<string, string> {
@@ -385,7 +423,7 @@ class SentryServer {
             });
 
             if (params.rel && params.results === 'true' && params.cursor) {
-                 links[params.rel] = params.cursor; // rel 값 (next 또는 prev)을 키로 사용
+                 links[params.rel] = params.cursor; // Use rel value (next or prev) as key
             }
         });
         return links;
@@ -393,7 +431,7 @@ class SentryServer {
   }
 
   /**
-   * 서버 실행
+   * Run the server
    */
   async run() {
     const transport = new StdioServerTransport();
@@ -402,7 +440,7 @@ class SentryServer {
   }
 }
 
-// 서버 인스턴스 생성 및 실행
+// Create and run server instance
 const server = new SentryServer();
 server.run().catch((error) => {
   console.error("Server failed to start:", error);
