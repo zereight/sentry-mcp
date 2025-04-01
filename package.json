@@ -1,0 +1,28 @@
+{
+  "name": "@zereight/sentry-server",
+  "version": "0.0.1",
+  "description": "A Model Context Protocol server",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "sentry-server": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+    "deploy": "npm run build && npm publish"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "axios": "^1.8.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "typescript": "^5.3.3"
+  }
+}
