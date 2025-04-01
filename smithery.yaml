@@ -1,0 +1,43 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required:
+      - sentryAuthToken
+      - sentryOrgSlug
+      - sentryProjectNames
+    properties:
+      sentryAuthToken:
+        type: string
+        description: Your Sentry authentication token
+      sentryOrgSlug:
+        type: string
+        description: The slug of your Sentry organization
+      sentryProjectNames:
+        type: string
+        description: Comma-separated Sentry project slugs
+      sentryBaseUrl:
+        type: string
+        default: https://sentry.io
+        description: "Optional: The Sentry base URL. Defaults to https://sentry.io"
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => ({
+      command: 'node',
+      args: ['build/index.js'],
+      env: {
+        SENTRY_AUTH_TOKEN: config.sentryAuthToken,
+        SENTRY_ORG_SLUG: config.sentryOrgSlug,
+        SENTRY_PROJECT_NAMES: config.sentryProjectNames,
+        SENTRY_BASE_URL: config.sentryBaseUrl || 'https://sentry.io'
+      }
+    })
+  exampleConfig:
+    sentryAuthToken: example_token_123
+    sentryOrgSlug: example-org
+    sentryProjectNames: project1,project2
+    sentryBaseUrl: https://sentry.io
