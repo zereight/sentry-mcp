@@ -108,17 +108,203 @@ class SentryServer {
             required: ['issue_id_or_url'],
           },
         },
+        {
+          name: 'list_organization_projects',
+          description: 'List all projects for the configured Sentry organization',
+          inputSchema: { // 입력 파라미터 없음
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          name: 'list_project_issues',
+          description: 'List issues for a specific project, with optional filtering.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              organization_slug: {
+                type: 'string',
+                description: 'The slug of the organization the project belongs to.',
+              },
+              project_slug: {
+                type: 'string',
+                description: 'The slug of the project to list issues for.',
+              },
+              query: {
+                type: 'string',
+                description: 'Sentry search query to filter issues (e.g., "is:unresolved", "assignee:me"). Optional.',
+              },
+              statsPeriod: {
+                type: 'string',
+                description: 'Time period for statistics (e.g., "24h", "14d", "auto"). Optional.',
+              },
+              cursor: {
+                 type: 'string',
+                 description: 'Pagination cursor for fetching next/previous page. Optional.',
+              }
+            },
+            required: ['organization_slug', 'project_slug'],
+          },
+        },
+        {
+          name: 'get_event_details',
+          description: 'Get details for a specific event within a project.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              organization_slug: {
+                type: 'string',
+                description: 'The slug of the organization the project belongs to.',
+              },
+              project_slug: {
+                type: 'string',
+                description: 'The slug of the project the event belongs to.',
+              },
+              event_id: {
+                type: 'string',
+                description: 'The ID of the event to retrieve.',
+              },
+            },
+            required: ['organization_slug', 'project_slug', 'event_id'],
+          },
+        },
       ],
     }));
 
     // 도구 호출 처리
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      if (request.params.name !== 'get_sentry_issue') {
-        throw new McpError(
-          ErrorCode.MethodNotFound,
-          `Unknown tool: ${request.params.name}`
-        );
-      }
+      // 도구 이름에 따라 분기
+      switch (request.params.name) {
+        case 'get_sentry_issue': {
+          // 기존 get_sentry_issue 로직 ... (아래에서 계속)
+          break; // case 종료
+        }
+        case 'list_organization_projects': {
+          try {
+            // Sentry API 호출하여 프로젝트 목록 가져오기
+            const response = await this.axiosInstance.get('projects/');
+            // 성공 시 프로젝트 목록 데이터를 JSON 문자열로 반환
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(response.data, null, 2),
+                },
+              ],
+            };
+          } catch (error) {
+            let errorMessage = 'Failed to list Sentry projects.';
+             if (axios.isAxiosError(error)) {
+               errorMessage = `Sentry API error: ${error.response?.status} ${error.response?.statusText}. ${JSON.stringify(error.response?.data)}`;
+               console.error("Sentry API Error Details:", error.response?.data);
+             } else if (error instanceof Error) {
+                 errorMessage = error.message;
+             }
+             console.error("Error listing Sentry projects:", error);
+            // 실패 시 오류 메시지 반환
+            return {
+              content: [ { type: 'text', text: errorMessage } ],
+              isError: true,
+            };
+          }
+          break; // case 종료
+        }
+        case 'list_project_issues': {
+          const { organization_slug, project_slug, query, statsPeriod, cursor } = request.params.arguments ?? {};
+
+          if (typeof organization_slug !== 'string' || typeof project_slug !== 'string') {
+            throw new McpError(ErrorCode.InvalidParams, 'Missing required arguments: organization_slug and project_slug must be strings.');
+          }
+
+          // API 요청을 위한 파라미터 구성
+          const apiParams: Record<string, string> = {};
+          if (typeof query === 'string' && query.length > 0) apiParams.query = query;
+          if (typeof statsPeriod === 'string' && statsPeriod.length > 0) apiParams.statsPeriod = statsPeriod;
+          if (typeof cursor === 'string' && cursor.length > 0) apiParams.cursor = cursor;
+
+          try {
+            const response = await this.axiosInstance.get(
+              `projects/${organization_slug}/${project_slug}/issues/`,
+              { params: apiParams }
+            );
+
+            // 페이지네이션 정보를 포함하여 결과 반환 (Link 헤더 파싱 필요)
+            const linkHeader = response.headers['link']; // Axios는 소문자로 헤더 키를 반환할 수 있음
+            const paginationInfo = parseLinkHeader(linkHeader); // Link 헤더 파싱 함수 필요
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    issues: response.data,
+                    pagination: paginationInfo, // 파싱된 페이지네이션 정보 추가
+                  }, null, 2),
+                },
+              ],
+            };
+          } catch (error) {
+             let errorMessage = 'Failed to list Sentry project issues.';
+             if (axios.isAxiosError(error)) {
+               errorMessage = `Sentry API error: ${error.response?.status} ${error.response?.statusText}. ${JSON.stringify(error.response?.data)}`;
+               console.error("Sentry API Error Details:", error.response?.data);
+             } else if (error instanceof Error) {
+                 errorMessage = error.message;
+             }
+             console.error("Error listing Sentry project issues:", error);
+            return {
+              content: [ { type: 'text', text: errorMessage } ],
+              isError: true,
+            };
+          }
+          break; // case 종료
+        }
+        case 'get_event_details': {
+          const { organization_slug, project_slug, event_id } = request.params.arguments ?? {};
+
+          if (typeof organization_slug !== 'string' || typeof project_slug !== 'string' || typeof event_id !== 'string') {
+            throw new McpError(ErrorCode.InvalidParams, 'Missing required arguments: organization_slug, project_slug, and event_id must be strings.');
+          }
+
+          try {
+            const response = await this.axiosInstance.get(
+              `projects/${organization_slug}/${project_slug}/events/${event_id}/`
+            );
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(response.data, null, 2),
+                },
+              ],
+            };
+          } catch (error) {
+             let errorMessage = 'Failed to fetch Sentry event details.';
+             if (axios.isAxiosError(error)) {
+               errorMessage = `Sentry API error: ${error.response?.status} ${error.response?.statusText}. ${JSON.stringify(error.response?.data)}`;
+               console.error("Sentry API Error Details:", error.response?.data);
+             } else if (error instanceof Error) {
+                 errorMessage = error.message;
+             }
+             console.error("Error fetching Sentry event details:", error);
+            return {
+              content: [ { type: 'text', text: errorMessage } ],
+              isError: true,
+            };
+          }
+          break; // case 종료
+        }
+        default: {
+          // 알 수 없는 도구 오류 처리
+          throw new McpError(
+            ErrorCode.MethodNotFound,
+            `Unknown tool: ${request.params.name}`
+          );
+        }
+      } // switch 종료
+
+      // --- get_sentry_issue 로직 시작 ---
 
       const issueInput = request.params.arguments?.issue_id_or_url;
 
@@ -173,7 +359,37 @@ class SentryServer {
           isError: true,
         };
       }
-    });
+    }); // CallToolRequestSchema 핸들러 종료
+
+    // --- Helper function to parse Link header ---
+    function parseLinkHeader(header: string | undefined): Record<string, string> {
+        if (!header) return {};
+
+        const links: Record<string, string> = {};
+        const parts = header.split(',');
+
+        parts.forEach(part => {
+            const section = part.split(';');
+            if (section.length < 2) return;
+
+            const urlMatch = section[0].match(/<(.*)>/);
+            if (!urlMatch) return;
+            const url = urlMatch[1];
+
+            const params: Record<string, string> = {};
+            section.slice(1).forEach(paramPart => {
+                const param = paramPart.trim().split('=');
+                if (param.length === 2) {
+                    params[param[0]] = param[1].replace(/"/g, '');
+                }
+            });
+
+            if (params.rel && params.results === 'true' && params.cursor) {
+                 links[params.rel] = params.cursor; // rel 값 (next 또는 prev)을 키로 사용
+            }
+        });
+        return links;
+    }
   }
 
   /**
