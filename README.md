@@ -2,8 +2,6 @@
 
 ## @zereight/sentry-server
 
-[![smithery badge](https://smithery.ai/badge/@zereight/sentry-server)](https://smithery.ai/server/@zereight/sentry-server)
-
 Sentry MCP(Model Context Protocol) Server. Allows interaction with the Sentry API to fetch issue and event details.
 
 ## Usage
